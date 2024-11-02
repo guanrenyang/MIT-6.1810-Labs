@@ -21,7 +21,7 @@ int xargs(char *path, int argc, char *argv[]){
     char buf[512];
     if(!argv[argc]){
         argv[argc] = buf;
-        argv[argc+1] = 0;
+        argv[argc+1] = 0; // argv[argc] is 0(NULL), while argv[argc+1] is undefined
     }
     while((n=readline(buf, sizeof(buf)))>0){
         int pid = fork();
