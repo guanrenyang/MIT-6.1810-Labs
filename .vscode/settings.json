@@ -1,0 +1,12 @@
+{
+    "files.associations": {
+        "*.py": "python",
+        "*.cu": "cpp",
+        "types.h": "c",
+        "user.h": "c",
+        "stat.h": "c",
+        "__config": "c",
+        "riscv.h": "c",
+        "param.h": "c"
+    }
+}
