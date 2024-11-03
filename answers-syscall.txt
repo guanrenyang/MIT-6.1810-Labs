@@ -1,0 +1,6 @@
+1. usertrap() ccalls syscall
+2. 0x7, which represents the idx of sys_exec system call in the system call table
+3. user mode
+4. lw	a3,0(zero) # 0 <_entry-0x80000000>, a3 <-> num
+5. pagefault
+6. initcode
