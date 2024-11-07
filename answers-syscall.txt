@@ -4,3 +4,9 @@
 4. lw	a3,0(zero) # 0 <_entry-0x80000000>, a3 <-> num
 5. pagefault
 6. initcode
+
+Attacktest:
+1. secret allocates 5 pages in fork, 2 pages in exec, and 32 pages when execution starts
+2. the secret is written in the 10th page of the 32 runtime-allocated pages
+3. when secret exits, it returns the pages to the free list using head-insert
+4. attack allocates 4 pages in fork, 2 pages in exec, and 32 pages when execution starts
