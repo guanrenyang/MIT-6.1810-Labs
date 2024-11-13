@@ -176,3 +176,18 @@ printfinit(void)
   initlock(&pr.lock, "pr");
   pr.locking = 1;
 }
+
+void
+backtrace(void)
+{
+  uint64 fp = r_fp();
+  uint64 topFp = PGROUNDDOWN(fp); // Get top of current stack page
+  printf("backtrace:\n");
+  while(fp != 0 && fp >= topFp && fp < topFp+PGSIZE) {
+    // Get return address from frame
+    uint64 ra = *(uint64*)(fp - 8);
+    printf("%lx\n", ra);
+    // Move to previous frame 
+    fp = *(uint64*)(fp - 16);
+  }
+}

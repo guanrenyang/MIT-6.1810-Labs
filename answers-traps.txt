@@ -1,0 +1,5 @@
+1. a0-a7 hold the arguments; a2 hold 13 in the example.
+2. '2e:	45b1                	li	a1,12', the call to f(x) and g(x) is inlined
+3. address: 6e2
+4. 3c, which is the address of the instruction just after `jal printf`
+5. 'HE110 World'
