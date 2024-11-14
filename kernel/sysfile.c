@@ -503,3 +503,26 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_sigalarm(void) {
+  int ticks;
+  uint64 handler;
+  struct proc *p = myproc();
+  
+  argint(0, &ticks);
+  argaddr(1, &handler);
+  p->alarm_ticks = ticks;
+  p->alarm_handler = (void (*)(void))handler;
+  p->alarm_eclipse = 0;
+  return 0;
+}
+
+uint64
+sys_sigreturn(void) {
+  struct proc *p = myproc();
+  p->alarm_eclipse = 0;
+  memmove(p->trapframe, &p->normal_trapframe, sizeof(struct trapframe));
+  p->trapframe->epc = p->normal_epc;
+  return p->trapframe->a0;
+}
