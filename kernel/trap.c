@@ -176,9 +176,54 @@ clockintr()
   w_stimecmp(r_time() + 1000000);
 }
 
+int
+storepagefault()
+{
+  uint64 va = r_stval();
+  struct proc *p = myproc();
+  
+  if(va >= MAXVA){
+    p->killed = 1;
+    return 3;
+  }
+
+  // Get the PTE for the faulting address
+  pte_t *pte = walk(p->pagetable, va, 0);
+  if(pte == 0){
+    p->killed = 1;
+    return 3;
+  }
+
+  // Check if this was originally writable (COW page)
+  if((*pte & PTE_V) && (*pte & PTE_ORGW)) {
+    // Allocate new page
+    uint64 pa = PTE2PA(*pte);
+    // printf("storepagefault: COW page at %p, count %d\n", (void*)pa, kpagecnt((void*)pa));
+    char *mem = kalloc();
+    if(mem == 0){
+      printf("storepagefault: kalloc failed\n");
+      p->killed = 1;
+      return 3;
+    }
+
+    // Copy old page contents
+    memmove(mem, (char*)pa, PGSIZE);
+    kfree((void*)pa);
+    // Map the new page with write permission
+    uint64 flags = (PTE_FLAGS(*pte) | PTE_W) & ~PTE_ORGW;
+    *pte = PA2PTE((uint64)mem) | flags;
+
+    return 3;
+  }
+
+  p->killed = 1;
+  return 3;
+}
+
 // check if it's an external interrupt or software interrupt,
 // and handle it.
-// returns 2 if timer interrupt,
+// returns 3 if store page fault
+// 2 if timer interrupt,
 // 1 if other device,
 // 0 if not recognized.
 int
@@ -211,6 +256,13 @@ devintr()
     // timer interrupt.
     clockintr();
     return 2;
+  } else if(scause == 0xf){
+    // store page fault
+    return storepagefault();
+  } else if (scause == 0xd || scause == 0xc){
+    struct proc *p = myproc();
+    p->killed = 1;
+    return 4;
   } else {
     return 0;
   }
