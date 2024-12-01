@@ -102,7 +102,33 @@ e1000_transmit(char *buf, int len)
   // a pointer so that it can be freed after send completes.
   //
 
-  
+  acquire(&e1000_lock);
+  uint32 tail = regs[E1000_TDT];
+
+  if((tx_ring[tail].status & E1000_TXD_STAT_DD) == 0) {
+    kfree(buf);
+    release(&e1000_lock);
+    return -1;
+  }
+
+  if(tx_bufs[tail]){
+    kfree(tx_bufs[tail]);
+  }
+
+  tx_bufs[tail] = buf;
+
+  tx_ring[tail].addr = (uint64)buf;
+  tx_ring[tail].length = len;
+  tx_ring[tail].cso = 0;
+  tx_ring[tail].cmd = E1000_TXD_CMD_RS | E1000_TXD_CMD_EOP;
+  tx_ring[tail].status = 0;
+  tx_ring[tail].css = 0;  // Not using hardware TCP checksum offloading
+  tx_ring[tail].special = 0;
+
+  regs[E1000_TDT] = (tail + 1) % TX_RING_SIZE;
+
+  release(&e1000_lock);
+
   return 0;
 }
 
@@ -115,7 +141,34 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver a buf for each packet (using net_rx()).
   //
+  acquire(&e1000_lock);
+  uint32 nextValid = (regs[E1000_RDT]+1)%RX_RING_SIZE;
+  uint32 head = regs[E1000_RDH];
 
+  while(nextValid != head){
+    if((rx_ring[nextValid].status & E1000_RXD_STAT_DD) == 0){
+      break;
+    }
+
+    release(&e1000_lock);
+    net_rx(rx_bufs[nextValid], rx_ring[nextValid].length);
+    acquire(&e1000_lock);
+
+    // TODO: add doc of the bug -- we can't check the validity of rx_bufs[nextValid] according to whether it's 0 or not
+    // beacuse a non-zero rx_bufs[nextValid] does not mean that the address is valid
+
+    // if(rx_bufs[nextValid]){
+    //   kfree(rx_bufs[nextValid]);
+    // }
+
+    rx_bufs[nextValid] = kalloc();
+    rx_ring[nextValid].addr = (uint64)rx_bufs[nextValid];
+    rx_ring[nextValid].status = 0;
+    
+    regs[E1000_RDT] = nextValid;
+    nextValid = (nextValid+1)%RX_RING_SIZE;
+  }
+  release(&e1000_lock);
 }
 
 void

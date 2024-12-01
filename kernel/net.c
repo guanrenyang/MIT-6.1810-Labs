@@ -19,10 +19,23 @@ static uint8 host_mac[ETHADDR_LEN] = { 0x52, 0x55, 0x0a, 0x00, 0x02, 0x02 };
 
 static struct spinlock netlock;
 
+#define MAX_PORTS 16
+#define MAX_PACKETS_PER_PORT 16
+struct bound_port {
+  uint32 port;
+  char *buf[MAX_PACKETS_PER_PORT];
+  uint64 chan;
+  int head;
+  int tail;
+} bound_ports[MAX_PORTS];
+int bound_ports_head;
+int bound_ports_tail;
+
 void
 netinit(void)
 {
   initlock(&netlock, "netlock");
+  bound_ports_head = bound_ports_tail = 0;
 }
 
 
@@ -38,7 +51,18 @@ sys_bind(void)
   // Your code here.
   //
 
-  return -1;
+  int port;
+  argint(0, &port);
+
+  if((bound_ports_tail+1)%MAX_PORTS == bound_ports_head){
+    return -1;
+  }
+
+  bound_ports[bound_ports_tail].port = port;
+  bound_ports[bound_ports_tail].head = bound_ports[bound_ports_tail].tail = 0;
+  bound_ports_tail = (bound_ports_tail + 1) % MAX_PORTS;
+
+  return 0;
 }
 
 //
@@ -77,7 +101,76 @@ sys_recv(void)
   //
   // Your code here.
   //
-  return -1;
+  
+  acquire(&netlock);
+
+  int dport;
+  int *src;
+  int *sport;
+  char *buf;
+  int maxlen;
+  argint(0, &dport);
+  argaddr(1, (uint64 *)&src);
+  argaddr(2, (uint64 *)&sport);
+  argaddr(3, (uint64 *)&buf);
+  argint(4, &maxlen);
+
+  struct bound_port *bp = 0;
+  for(int i = bound_ports_head; i != bound_ports_tail; i = (i+1)%MAX_PORTS){
+    if(bound_ports[i].port == dport){
+      bp = &bound_ports[i];
+      break;
+    }
+  }
+
+  if(bp == 0){
+    release(&netlock);
+    return -1;
+  }
+
+  if(bp->head == bp->tail){
+    sleep(&bp->chan, &netlock);
+    if(myproc()->killed){
+      release(&netlock);
+      return -1;
+    }
+  }
+
+  struct eth *packet = (struct eth *)bp->buf[bp->head];
+  struct ip *ip = (struct ip *)(packet + 1);
+  struct udp *udp = (struct udp *)(ip + 1);
+
+  uint32 src_ip = ntohl(ip->ip_src);
+  if(copyout(myproc()->pagetable, (uint64)src, (char *)&src_ip, sizeof(src_ip)) < 0){
+    kfree(bp->buf[bp->head]);
+    release(&netlock);
+    return -1;
+  }
+
+  uint16 sport_val = ntohs(udp->sport);
+  if(copyout(myproc()->pagetable, (uint64)sport, (char *)&sport_val, sizeof(sport_val)) < 0){
+    kfree(bp->buf[bp->head]);
+    release(&netlock);
+    return -1;
+  }
+
+  int len = ntohs(udp->ulen) - sizeof(struct udp);
+  if(len > maxlen){
+    len = maxlen;
+  }
+  if(copyout(myproc()->pagetable, (uint64)buf, (char *)(udp + 1), len) < 0){
+    kfree(bp->buf[bp->head]);
+    release(&netlock);
+    return -1;
+  }
+
+  kfree(bp->buf[bp->head]);
+  bp->buf[bp->head] = 0;
+  bp->head = (bp->head + 1) % MAX_PACKETS_PER_PORT;
+
+  release(&netlock);
+
+  return len;
 }
 
 // This code is lifted from FreeBSD's ping.c, and is copyright by the Regents
@@ -144,7 +237,7 @@ sys_send(void)
     return -1;
   }
   memset(buf, 0, PGSIZE);
-
+  
   struct eth *eth = (struct eth *) buf;
   memmove(eth->dhost, host_mac, ETHADDR_LEN);
   memmove(eth->shost, local_mac, ETHADDR_LEN);
@@ -191,7 +284,39 @@ ip_rx(char *buf, int len)
   //
   // Your code here.
   //
+  struct eth *eth = (struct eth *) buf;
+  struct ip *ip = (struct ip *)(eth + 1);
+  struct udp *udp = (struct udp *)(ip + 1);
+  uint32 dport = ntohs(udp->dport);
+
+  struct bound_port *bp = 0;
+  for(int i = bound_ports_head; i != bound_ports_tail; i = (i+1)%MAX_PORTS){
+    if(bound_ports[i].port == dport){
+      bp = &bound_ports[i];
+      break;
+    }
+  }
+  if(bp == 0){
+    kfree(buf);
+    return;
+  }
   
+  if((bp->tail+1)%MAX_PACKETS_PER_PORT == bp->head){
+    kfree(buf);
+    return;
+  }
+
+  char *outbuf = kalloc();
+  if(outbuf == 0){
+    kfree(buf);
+    return;
+  }
+  memmove(outbuf, buf, len);
+  bp->buf[bp->tail] = outbuf;
+  bp->tail = (bp->tail + 1) % MAX_PACKETS_PER_PORT;
+  kfree(buf);
+
+  wakeup(&bp->chan);
 }
 
 //
