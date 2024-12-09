@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
 
 struct cpu cpus[NCPU];
 
@@ -146,6 +150,15 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  for(int i = 0; i < NVMA; i++){
+    p->vma[i].addr = 0;
+    p->vma[i].file = 0;
+    p->vma[i].length = 0;
+    p->vma[i].prot = 0;
+    p->vma[i].flags = 0;
+    p->vma[i].offset = 0;
+    p->vma[i].valid = 0;
+  }
   return p;
 }
 
@@ -322,6 +335,19 @@ fork(void)
   np->state = RUNNABLE;
   release(&np->lock);
 
+  acquire(&np->lock);
+  for(int i = 0; i < NVMA; i++){
+    if(p->vma[i].valid){
+      np->vma[i].valid = p->vma[i].valid;
+      np->vma[i].addr = p->vma[i].addr;
+      np->vma[i].length = p->vma[i].length;
+      np->vma[i].prot = p->vma[i].prot;
+      np->vma[i].flags = p->vma[i].flags;
+      np->vma[i].offset = p->vma[i].offset;
+      np->vma[i].file = p->vma[i].file ? filedup(p->vma[i].file) : 0;
+    }
+  }
+  release(&np->lock);
   return pid;
 }
 
@@ -692,4 +718,84 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+struct vma* 
+vmaalloc(uint64 addr, uint64 len, int prot, int flags, int fd, uint64 offset) {
+  struct proc *p = myproc();
+  for(int i = 0; i < NVMA; i++) {
+    if(p->vma[i].valid == 0) {
+      struct file *file = myproc()->ofile[fd];
+      if(file == 0) {
+        return 0;
+      }
+      if((flags & MAP_SHARED) && (prot & PROT_WRITE) && !file->writable) {
+        return 0;
+      }
+      p->vma[i].valid = 1;
+      p->vma[i].addr = p->sz;
+      p->vma[i].length = len;
+      p->vma[i].prot = prot;
+      p->vma[i].flags = flags;
+      p->vma[i].file = file;
+      p->vma[i].offset = offset;
+
+      filedup(file);
+      p->sz += len;
+
+      return &p->vma[i];
+    }
+  }
+  return 0;
+}
+
+int vmafree(uint64 addr, uint64 len) {
+  struct proc *p = myproc();
+  for(int i = 0; i < NVMA; i++) {
+    if(p->vma[i].valid == 0) {
+      continue;
+    }
+    if(p->vma[i].addr <= addr && addr < (p->vma[i].addr + p->vma[i].length)) {
+      if(p->vma[i].flags & MAP_SHARED) {
+        struct inode *ip = p->vma[i].file->ip;
+        // Write back page by page, checking dirty bit
+        /* BUG FIX: things related to offset to start of vma and offset to start of file()
+          write back of vma can't exceed the size of file
+        */
+        uint64 vma_offset = addr - p->vma[i].addr;
+        uint64 leftfilesize = ip->size - p->vma[i].offset - vma_offset;
+
+        begin_op();
+        ilock(ip);
+        uint64 file_offset = vma_offset + p->vma[i].offset;
+        uint64 writesize = len > leftfilesize ? leftfilesize : len;
+        writei(ip, 1, addr, file_offset, writesize);
+        iunlock(ip);
+        end_op();
+      }
+      uvmunmap(p->pagetable, addr, len/PGSIZE, 1);
+      if (p->vma[i].addr == addr && p->vma[i].length == len) {
+        fileclose(p->vma[i].file);
+        p->vma[i].valid = 0;
+        p->vma[i].addr = 0;
+        p->vma[i].length = 0;
+        p->vma[i].prot = 0;
+        p->vma[i].flags = 0;
+        p->vma[i].file = 0;
+        p->vma[i].offset = 0;
+        return 0;
+      } else if (p->vma[i].addr == addr) {
+        p->vma[i].addr = addr + len;
+        p->vma[i].length -= len;
+        p->vma[i].offset += len;
+        return 0;
+      } else if (addr + len == p->vma[i].addr + p->vma[i].length) {
+        p->vma[i].length -= len;
+        return 0;
+      } else {
+        panic("vmafree: invalid vma");
+      }
+    }
+  }
+  return -1;
 }

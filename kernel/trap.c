@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -67,6 +71,51 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+    /* BUG FIX: vma read-write protection should be done here,
+      if the underlying file is writable but the vma is read-only,
+      pose a user-trap exception*/
+  } else if (r_scause() == 13 || r_scause() == 15) {
+    uint64 va = r_stval();
+    if(va >= p->sz || va < PGROUNDDOWN(p->trapframe->sp)) {
+      printf("usertrap(): invalid address 0x%lx pid=%d\n", va, p->pid);
+      setkilled(p);
+    } else {
+      int i;
+      for (i = 0; i < NVMA; i++) {
+        if (p->vma[i].valid == 1 && p->vma[i].addr <= va && va < (p->vma[i].addr + p->vma[i].length)) {
+          break;
+        }
+      }
+      if (i == NVMA || ((p->vma[i].flags & MAP_SHARED) != 0 && (p->vma[i].prot & PROT_WRITE) == 0 && r_scause() == 15)) {
+        printf("usertrap(): invalid address 0x%lx pid=%d\n", va, p->pid);
+        setkilled(p);
+      } else {
+        uint64 pa = (uint64) kalloc();
+        if (pa == 0) {
+          printf("usertrap(): failed to allocate memory pid=%d\n", p->pid);
+          setkilled(p);
+        }
+        memset((void*)pa, 0, PGSIZE);
+        va = PGROUNDDOWN(va);
+        struct inode *ip = p->vma[i].file->ip;
+        ilock(ip);
+        readi(ip, 0, pa, va-p->vma[i].addr, PGSIZE);
+        iunlock(ip);
+        uint64 flag = PTE_U;
+        if(p->vma[i].prot & PROT_READ) {
+          flag |= PTE_R;
+        }
+        if(p->vma[i].prot & PROT_WRITE) {
+          flag |= PTE_W;
+        }
+        printf("proc: %d, flag: %ld\n", p->pid, flag);
+        if(mappages(p->pagetable, va, PGSIZE, pa, flag) != 0) {
+          kfree((void*)pa);
+          printf("usertrap(): failed to map memory pid=%d\n", p->pid);
+          setkilled(p);
+        }
+      }
+    }
   } else {
     printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
     printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());

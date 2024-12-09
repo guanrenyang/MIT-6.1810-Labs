@@ -503,3 +503,37 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr, len;
+  int prot, flags, fd;
+  uint64 offset;
+  struct file *file;
+
+  argaddr(0, &addr);
+  argaddr(1, &len);
+  argint(2, &prot);
+  argint(3, &flags);
+  argfd(4, &fd, &file);
+  argaddr(5, &offset);
+  
+  struct vma *vma = vmaalloc(addr, len, prot, flags, fd, offset);
+  if(vma == 0) {
+    return -1;
+  }
+
+  return vma->addr;
+}
+
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr, len;
+  argaddr(0, &addr);
+  argaddr(1, &len);
+
+  return vmafree(addr, len);
+}

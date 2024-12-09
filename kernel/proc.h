@@ -79,6 +79,16 @@ struct trapframe {
   /* 280 */ uint64 t6;
 };
 
+struct vma {
+  uint64 addr;     // Starting virtual address of the mapping
+  uint64 length;   // Length of the mapping in bytes
+  int prot;        // Memory protection flags (PROT_READ, PROT_WRITE)
+  int flags;       // Mapping flags (MAP_SHARED, MAP_PRIVATE)
+  struct file *file;  // File being mapped
+  uint64 offset;    // Offset in the file
+  int valid;        // Is this VMA entry in use?
+};
+
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
 // Per-process state
@@ -104,4 +114,5 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  struct vma vma[NVMA];        // Virtual memory areas
 };
